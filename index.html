@@ -186,5 +186,98 @@
         </div>
     </footer>
 
+    <!-- Firebase Script for Waitlist Registration (Data Recording) -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- Firebase Environment Setup (MANDATORY) ---
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db;
+        let auth;
+        let app;
+
+        if (firebaseConfig) {
+            app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            auth = getAuth(app);
+            console.log("Firebase initialized.");
+
+            // Authenticate user (anonymously for public form submissions)
+            (async () => {
+                try {
+                    if (initialAuthToken) {
+                        await signInWithCustomToken(auth, initialAuthToken);
+                        console.log("Signed in with custom token.");
+                    } else {
+                        await signInAnonymously(auth);
+                        console.log("Signed in anonymously.");
+                    }
+                } catch (error) {
+                    console.error("Firebase Auth error:", error);
+                }
+            })();
+        } else {
+            console.error("Firebase configuration not found. Cannot save waitlist emails.");
+        }
+        
+        // --- Waitlist Form Handler ---
+        document.getElementById('waitlistForm').addEventListener('submit', handleWaitlistSignup);
+
+        async function handleWaitlistSignup(event) {
+            event.preventDefault();
+            const emailInput = document.getElementById('emailInput');
+            const email = emailInput.value.trim();
+            const signupButton = document.getElementById('signupButton');
+
+            if (!email || !db) {
+                console.error("Email is empty or Firebase is not initialized.");
+                // Provide simple feedback without alert()
+                signupButton.textContent = 'Error (Try Again)';
+                setTimeout(() => signupButton.textContent = 'Secure My Spot', 3000);
+                return;
+            }
+
+            signupButton.disabled = true;
+            signupButton.textContent = 'Submitting...';
+
+            try {
+                // 1. Record the email to Firestore in a public collection
+                // Path: /artifacts/{appId}/public/data/waitlist_emails
+                const waitlistCollectionRef = collection(db, 'artifacts', appId, 'public', 'data', 'waitlist_emails');
+                
+                await addDoc(waitlistCollectionRef, {
+                    email: email,
+                    timestamp: new Date(),
+                });
+
+                // 2. Display Success Message (Replacing the Form)
+                const formContainer = document.getElementById('waitlistForm').parentNode;
+                formContainer.innerHTML = `
+                    <div class="p-8 rounded-xl bg-indigo-500/30">
+                        <h3 class="text-2xl font-bold text-white mb-2">Success!</h3>
+                        <p class="text-indigo-200">
+                            Your email (**${email}**) has been successfully recorded to the waitlist. We will notify you when the private beta is ready!
+                        </p>
+                        <p class="text-sm text-indigo-300 mt-4">
+                            *(Note: For the actual email notification feature, you would integrate a service like SendGrid, Mailgun, or Firebase Cloud Functions with a third-party email API.)*
+                        </p>
+                    </div>
+                `;
+
+            } catch (e) {
+                console.error("Error adding document: ", e);
+                // Reset button on failure
+                signupButton.disabled = false;
+                signupButton.textContent = 'Error (Try Again)';
+                setTimeout(() => signupButton.textContent = 'Secure My Spot', 3000);
+            }
+        }
+    </script>
+
 </body>
 </html>
