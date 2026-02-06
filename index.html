@@ -1,0 +1,728 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
+  BarChart, Bar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, Legend, AreaChart, Area
+} from 'recharts';
+import { 
+  MessageSquare, Upload, Zap, Activity, Users, Eye, 
+  ShieldAlert, Heart, Brain, ChevronRight, Search, Menu, X, ArrowUpRight, Sparkles, Send
+} from 'lucide-react';
+
+/* -------------------------------------------------------------------------- */
+/* CONFIGURATION & MOCKS                          */
+/* -------------------------------------------------------------------------- */
+
+const apiKey = ""; // The execution environment provides the key at runtime.
+
+const DEFAULT_CHAT_TEXT = `[10:00 AM] Alex: We need to talk about the project deadline.
+[10:05 AM] Jordan: Again? I thought we settled this yesterday.
+[10:07 AM] Alex: I'm not trying to argue. I'm just worried we're falling behind.
+[10:15 AM] Jordan: It feels like you don't trust my process.
+[10:16 AM] Alex: It's not about trust. It's about the client's expectations.
+[10:45 AM] Jordan: Fine. What do you need me to do?
+[10:46 AM] Alex: Just a quick timeline update by EOD. That's all.
+[11:00 AM] Jordan: Okay, I can do that. Sorry for snapping.`;
+
+const MOCK_MESSAGES = [
+  { id: 1, sender: 'Alex', text: "We need to talk about the project deadline.", timestamp: "10:00 AM", sentiment: -0.2, subtext: "Serious tone detected." },
+  { id: 2, sender: 'Jordan', text: "Again? I thought we settled this yesterday.", timestamp: "10:05 AM", sentiment: -0.6, subtext: "Defensive. Detecting frustration." },
+  { id: 3, sender: 'Alex', text: "I'm not trying to argue. I'm just worried we're falling behind.", timestamp: "10:07 AM", sentiment: -0.1, subtext: "Attempting de-escalation." },
+  { id: 4, sender: 'Jordan', text: "It feels like you don't trust my process.", timestamp: "10:15 AM", sentiment: -0.8, subtext: "Vulnerability masked as accusation." },
+  { id: 5, sender: 'Alex', text: "It's not about trust. It's about the client's expectations.", timestamp: "10:16 AM", sentiment: 0.1, subtext: "Shifting focus to external factors." },
+  { id: 6, sender: 'Jordan', text: "Fine. What do you need me to do?", timestamp: "10:45 AM", sentiment: -0.3, subtext: "Reluctant compliance." },
+  { id: 7, sender: 'Alex', text: "Just a quick timeline update by EOD. That's all.", timestamp: "10:46 AM", sentiment: 0.4, subtext: "Reassurance offered." },
+  { id: 8, sender: 'Jordan', text: "Okay, I can do that. Sorry for snapping.", timestamp: "11:00 AM", sentiment: 0.7, subtext: "Genuine repair attempt." },
+];
+
+const EMOTIONAL_ARC_DATA = [
+  { time: 'Start', Alex: 40, Jordan: 30, Tension: 20 },
+  { time: '10:05', Alex: 35, Jordan: 10, Tension: 70 },
+  { time: '10:15', Alex: 45, Jordan: 5, Tension: 85 },
+  { time: '10:30', Alex: 50, Jordan: 20, Tension: 60 },
+  { time: '10:45', Alex: 60, Jordan: 40, Tension: 40 },
+  { time: 'End', Alex: 80, Jordan: 75, Tension: 10 },
+];
+
+const PERSONALITY_DATA = [
+  { subject: 'Empathy', A: 120, B: 110, fullMark: 150 },
+  { subject: 'Logic', A: 98, B: 130, fullMark: 150 },
+  { subject: 'Aggression', A: 40, B: 90, fullMark: 150 },
+  { subject: 'Patience', A: 110, B: 60, fullMark: 150 },
+  { subject: 'Clarity', A: 130, B: 100, fullMark: 150 },
+];
+
+/* -------------------------------------------------------------------------- */
+/* API HELPERS                                  */
+/* -------------------------------------------------------------------------- */
+
+const callGemini = async (prompt, systemInstruction = "") => {
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          systemInstruction: { parts: [{ text: systemInstruction }] },
+          generationConfig: {
+            responseMimeType: "application/json"
+          }
+        })
+      }
+    );
+    
+    if (!response.ok) {
+       throw new Error(`API Error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    return JSON.parse(data.candidates[0].content.parts[0].text);
+  } catch (error) {
+    console.error("Gemini API Error:", error);
+    return null;
+  }
+};
+
+const callGeminiChat = async (history, newQuestion, context) => {
+  try {
+    // Construct a simple prompt for the chat (non-JSON mode for conversation)
+    const prompt = `
+      Context: You are "The Third Person", an objective, wise, and slightly analytical relationship mediator. 
+      You are analyzing the following chat transcript: "${context}".
+      
+      User Question: "${newQuestion}"
+      
+      Answer the user's question based strictly on the transcript provided. Be helpful, concise, and objective. 
+      Do not return JSON, just return plain text formatted with Markdown if needed.
+    `;
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }]
+        })
+      }
+    );
+     if (!response.ok) throw new Error("API Error");
+     const data = await response.json();
+     return data.candidates[0].content.parts[0].text;
+  } catch (e) {
+    console.error(e);
+    return "I'm having trouble connecting to the intuitive plane right now. Please try again.";
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* COMPONENTS                                  */
+/* -------------------------------------------------------------------------- */
+
+const Sidebar = ({ activeTab, setActiveTab, isOpen, setIsOpen }) => {
+  const menuItems = [
+    { id: 'overview', label: 'Omniscient View', icon: Eye },
+    { id: 'oracle', label: 'The Oracle ✨', icon: Sparkles },
+    { id: 'subtext', label: 'Subtext Decoder', icon: Brain },
+    { id: 'dynamics', label: 'Power Dynamics', icon: Zap },
+    { id: 'timeline', label: 'Narrative Arc', icon: Activity },
+    { id: 'health', label: 'Relationship Health', icon: Heart },
+  ];
+
+  return (
+    <>
+      {/* Mobile Overlay */}
+      <div 
+        className={`fixed inset-0 z-20 bg-black/50 lg:hidden transition-opacity ${isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+        onClick={() => setIsOpen(false)}
+      />
+      
+      {/* Sidebar Content */}
+      <div className={`fixed inset-y-0 left-0 z-30 w-64 bg-slate-900 border-r border-slate-800 transform transition-transform duration-300 lg:translate-x-0 ${isOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+        <div className="p-6 flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-indigo-500 flex items-center justify-center">
+            <Users className="text-white w-5 h-5" />
+          </div>
+          <span className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-400">
+            Third Person
+          </span>
+        </div>
+
+        <nav className="mt-6 px-3">
+          <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-4 px-3">Analysis Modules</div>
+          <ul className="space-y-1">
+            {menuItems.map((item) => (
+              <li key={item.id}>
+                <button
+                  onClick={() => { setActiveTab(item.id); setIsOpen(false); }}
+                  className={`w-full flex items-center gap-3 px-3 py-3 rounded-lg text-sm font-medium transition-all duration-200
+                    ${activeTab === item.id 
+                      ? 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20' 
+                      : 'text-slate-400 hover:text-white hover:bg-slate-800'}`}
+                >
+                  <item.icon className={`w-5 h-5 ${activeTab === item.id ? 'text-indigo-400' : 'text-slate-500'}`} />
+                  {item.label}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </nav>
+
+        <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-slate-800">
+          <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700/50">
+            <div className="text-xs text-slate-400 mb-2">Analysis Tokens</div>
+            <div className="w-full h-2 bg-slate-700 rounded-full overflow-hidden">
+              <div className="h-full w-3/4 bg-indigo-500 rounded-full"></div>
+            </div>
+            <div className="flex justify-between mt-2 text-xs text-slate-300">
+              <span>Gemini Pro Active</span>
+              <span className="text-indigo-400">Online</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+};
+
+const MetricCard = ({ title, value, subtext, trend, color = "indigo" }) => {
+  const colors = {
+    indigo: "from-indigo-500/20 to-indigo-600/5 text-indigo-400 border-indigo-500/30",
+    emerald: "from-emerald-500/20 to-emerald-600/5 text-emerald-400 border-emerald-500/30",
+    rose: "from-rose-500/20 to-rose-600/5 text-rose-400 border-rose-500/30",
+    amber: "from-amber-500/20 to-amber-600/5 text-amber-400 border-amber-500/30",
+  };
+
+  return (
+    <div className={`relative overflow-hidden rounded-xl border bg-gradient-to-br p-6 ${colors[color]}`}>
+      <div className="flex justify-between items-start">
+        <div>
+          <p className="text-sm font-medium text-slate-400">{title}</p>
+          <h3 className="text-3xl font-bold text-white mt-2">{value}</h3>
+        </div>
+        {trend && (
+          <div className={`px-2 py-1 rounded-full text-xs font-bold ${trend > 0 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>
+            {trend > 0 ? '+' : ''}{trend}%
+          </div>
+        )}
+      </div>
+      <p className="text-sm text-slate-400 mt-2">{subtext}</p>
+    </div>
+  );
+};
+
+const ChatBubble = ({ msg }) => {
+  const isMe = msg.sender === 'Jordan'; // Mock "Me"
+  
+  return (
+    <div className={`flex w-full mb-4 ${isMe ? 'justify-end' : 'justify-start'}`}>
+      <div className={`max-w-[80%] lg:max-w-[60%] group relative`}>
+        {/* Subtext Tooltip */}
+        <div className={`absolute -top-6 ${isMe ? 'right-0' : 'left-0'} opacity-0 group-hover:opacity-100 transition-opacity duration-200`}>
+          <span className="bg-indigo-600 text-white text-xs px-2 py-1 rounded-md shadow-lg whitespace-nowrap">
+            AI Insight: {msg.subtext}
+          </span>
+        </div>
+
+        <div className={`p-4 rounded-2xl text-sm leading-relaxed shadow-sm
+          ${isMe 
+            ? 'bg-indigo-600 text-white rounded-br-none' 
+            : 'bg-slate-800 text-slate-200 border border-slate-700 rounded-bl-none'
+          }`}>
+          <div className="flex justify-between items-center mb-1 opacity-70 text-xs">
+            <span className="font-semibold">{msg.sender}</span>
+            <span className="ml-4">{msg.timestamp}</span>
+          </div>
+          {msg.text}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const OverviewView = ({ data }) => {
+  // Use data from props if available, otherwise fallback to defaults/mocks
+  const healthScore = data?.healthScore || 78;
+  const conflictLevel = data?.conflictLevel || "Low";
+  const dominantTone = data?.dominantTone || "Analytical";
+  const verdict = data?.verdict || {
+    coreConflict: "Misalignment on trust vs. competence.",
+    resolutionStrategy: "Alex effectively de-escalated by validating the timeline.",
+    hiddenPattern: "Jordan tends to use apologies to end conflicts quickly."
+  };
+
+  return (
+  <div className="space-y-6 animate-fadeIn">
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <MetricCard 
+        title="Health Score" 
+        value={`${healthScore}/100`} 
+        subtext="Based on communication patterns" 
+        trend={healthScore > 70 ? 12 : -5} 
+        color={healthScore > 75 ? "emerald" : healthScore > 50 ? "amber" : "rose"} 
+      />
+      <MetricCard title="Conflict Level" value={conflictLevel} subtext="Peak tension analysis" color="rose" />
+      <MetricCard title="Dominant Tone" value={dominantTone} subtext="Overall semantic analysis" color="indigo" />
+      <MetricCard title="Engagement" value="Balanced" subtext="48% / 52% split" color="amber" />
+    </div>
+
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {/* Main Chart */}
+      <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
+        <h3 className="text-lg font-semibold text-white mb-6 flex items-center gap-2">
+          <Activity className="w-5 h-5 text-indigo-400" />
+          Emotional Velocity
+        </h3>
+        <div className="h-72 w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={EMOTIONAL_ARC_DATA}>
+              <defs>
+                <linearGradient id="colorTension" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#f43f5e" stopOpacity={0.3}/>
+                  <stop offset="95%" stopColor="#f43f5e" stopOpacity={0}/>
+                </linearGradient>
+                <linearGradient id="colorAlex" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3}/>
+                  <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+              <XAxis dataKey="time" stroke="#64748b" tick={{fill: '#64748b'}} />
+              <YAxis stroke="#64748b" tick={{fill: '#64748b'}} />
+              <Tooltip 
+                contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', color: '#f8fafc' }}
+                itemStyle={{ color: '#cbd5e1' }}
+              />
+              <Area type="monotone" dataKey="Tension" stroke="#f43f5e" fillOpacity={1} fill="url(#colorTension)" strokeWidth={2} />
+              <Area type="monotone" dataKey="Alex" stroke="#6366f1" fillOpacity={1} fill="url(#colorAlex)" strokeWidth={2} />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      {/* Insight Panel */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl flex flex-col">
+        <h3 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
+          <Eye className="w-5 h-5 text-indigo-400" />
+          The Third Person Verdict
+        </h3>
+        <div className="flex-1 overflow-y-auto space-y-4 pr-2 custom-scrollbar">
+          <div className="p-4 rounded-lg bg-indigo-500/10 border border-indigo-500/20">
+            <h4 className="text-indigo-300 font-medium text-sm mb-1">Core Conflict</h4>
+            <p className="text-slate-400 text-sm">{verdict.coreConflict}</p>
+          </div>
+          <div className="p-4 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+            <h4 className="text-emerald-300 font-medium text-sm mb-1">Resolution Strategy</h4>
+            <p className="text-slate-400 text-sm">{verdict.resolutionStrategy}</p>
+          </div>
+          <div className="p-4 rounded-lg bg-slate-800 border border-slate-700">
+            <h4 className="text-slate-300 font-medium text-sm mb-1">Hidden Pattern</h4>
+            <p className="text-slate-400 text-sm">{verdict.hiddenPattern}</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+)};
+
+const SubtextDecoder = () => (
+  <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 h-full animate-fadeIn">
+    {/* Chat Replay */}
+    <div className="lg:col-span-3 bg-slate-900 border border-slate-800 rounded-xl shadow-xl flex flex-col h-[calc(100vh-140px)]">
+      <div className="p-4 border-b border-slate-800 flex justify-between items-center">
+        <h3 className="font-semibold text-white">Annotated Transcript</h3>
+        <span className="text-xs text-slate-500">Hover for subtext</span>
+      </div>
+      <div className="flex-1 overflow-y-auto p-6 bg-slate-950/50">
+        {MOCK_MESSAGES.map(msg => <ChatBubble key={msg.id} msg={msg} />)}
+      </div>
+    </div>
+
+    {/* Analysis Details */}
+    <div className="lg:col-span-2 space-y-6">
+       <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
+        <h3 className="text-lg font-semibold text-white mb-6">Subtext Radar</h3>
+        <div className="h-64 w-full">
+           <ResponsiveContainer width="100%" height="100%">
+            <RadarChart outerRadius={90} data={PERSONALITY_DATA}>
+              <PolarGrid stroke="#334155" />
+              <PolarAngleAxis dataKey="subject" tick={{ fill: '#94a3b8', fontSize: 12 }} />
+              <PolarRadiusAxis angle={30} domain={[0, 150]} tick={false} axisLine={false} />
+              <Radar name="Alex" dataKey="A" stroke="#818cf8" fill="#818cf8" fillOpacity={0.3} />
+              <Radar name="Jordan" dataKey="B" stroke="#f43f5e" fill="#f43f5e" fillOpacity={0.3} />
+              <Legend wrapperStyle={{ color: '#cbd5e1' }} />
+            </RadarChart>
+          </ResponsiveContainer>
+        </div>
+       </div>
+
+       <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
+          <h3 className="text-lg font-semibold text-white mb-4">Critical Moments</h3>
+          <ul className="space-y-4">
+            <li className="flex gap-4 items-start p-3 hover:bg-slate-800/50 rounded-lg transition-colors cursor-pointer">
+              <div className="w-8 h-8 rounded-full bg-rose-500/20 flex items-center justify-center shrink-0 mt-1">
+                <ShieldAlert className="w-4 h-4 text-rose-400" />
+              </div>
+              <div>
+                <div className="flex justify-between w-full">
+                  <h5 className="text-slate-200 font-medium text-sm">Defensiveness Spike</h5>
+                  <span className="text-xs text-slate-500">10:15 AM</span>
+                </div>
+                <p className="text-xs text-slate-400 mt-1">Jordan projected insecurity about "trust" onto a logistical request.</p>
+              </div>
+            </li>
+            <li className="flex gap-4 items-start p-3 hover:bg-slate-800/50 rounded-lg transition-colors cursor-pointer">
+              <div className="w-8 h-8 rounded-full bg-emerald-500/20 flex items-center justify-center shrink-0 mt-1">
+                <Zap className="w-4 h-4 text-emerald-400" />
+              </div>
+              <div>
+                <div className="flex justify-between w-full">
+                   <h5 className="text-slate-200 font-medium text-sm">Successful Repair</h5>
+                   <span className="text-xs text-slate-500">10:46 AM</span>
+                </div>
+                <p className="text-xs text-slate-400 mt-1">Alex ignored the bait and focused on a concrete, achievable task.</p>
+              </div>
+            </li>
+          </ul>
+       </div>
+    </div>
+  </div>
+);
+
+const OracleView = ({ chatContext }) => {
+  const [messages, setMessages] = useState([
+    { role: 'ai', text: 'I am the Third Person. I have read the transcript. What do you wish to understand about this interaction?' }
+  ]);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
+  const endRef = useRef(null);
+
+  const handleSend = async () => {
+    if (!input.trim()) return;
+    const userMsg = input;
+    setInput('');
+    setMessages(prev => [...prev, { role: 'user', text: userMsg }]);
+    setLoading(true);
+
+    const answer = await callGeminiChat(messages, userMsg, chatContext);
+    
+    setLoading(false);
+    setMessages(prev => [...prev, { role: 'ai', text: answer }]);
+  };
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  return (
+    <div className="flex flex-col h-[calc(100vh-140px)] bg-slate-900 border border-slate-800 rounded-xl overflow-hidden animate-fadeIn shadow-2xl">
+      <div className="p-4 bg-slate-950 border-b border-slate-800 flex justify-between items-center">
+        <div className="flex items-center gap-2">
+          <Sparkles className="w-5 h-5 text-indigo-400" />
+          <h3 className="font-semibold text-white">The Oracle</h3>
+        </div>
+        <span className="text-xs text-indigo-400 bg-indigo-500/10 px-2 py-1 rounded border border-indigo-500/20">Gemini Powered</span>
+      </div>
+      
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {messages.map((m, i) => (
+          <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+            <div className={`max-w-[80%] p-4 rounded-2xl text-sm leading-relaxed ${
+              m.role === 'user' 
+                ? 'bg-indigo-600 text-white rounded-br-none' 
+                : 'bg-slate-800 text-slate-200 border border-slate-700 rounded-bl-none'
+            }`}>
+              {m.text}
+            </div>
+          </div>
+        ))}
+        {loading && (
+          <div className="flex justify-start">
+            <div className="bg-slate-800 text-slate-400 px-4 py-3 rounded-2xl rounded-bl-none text-xs flex gap-2 items-center border border-slate-700">
+              <span className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" />
+              <span className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce delay-75" />
+              <span className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce delay-150" />
+            </div>
+          </div>
+        )}
+        <div ref={endRef} />
+      </div>
+
+      <div className="p-4 bg-slate-950 border-t border-slate-800">
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+            placeholder="Ask about the subtext, hidden meanings, or advice..."
+            className="flex-1 bg-slate-900 border border-slate-700 text-white text-sm rounded-lg px-4 py-3 focus:outline-none focus:border-indigo-500 transition-colors"
+          />
+          <button 
+            onClick={handleSend}
+            disabled={loading}
+            className="bg-indigo-600 hover:bg-indigo-700 text-white p-3 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <Send className="w-5 h-5" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const UploadView = ({ onAnalyze, textInput, setTextInput, loading }) => (
+  <div className="flex flex-col items-center justify-center h-[calc(100vh-100px)] animate-fadeIn overflow-y-auto">
+    <div className="w-full max-w-4xl text-center space-y-8 p-8">
+      <div className="space-y-2">
+        <h1 className="text-4xl md:text-5xl font-bold text-white tracking-tight">
+          See the <span className="text-indigo-500">Unsaid</span>.
+        </h1>
+        <p className="text-slate-400 text-lg">
+          Paste your chat logs below for an objective, AI-powered analysis.
+        </p>
+      </div>
+
+      <div className="flex flex-col md:flex-row gap-6 items-stretch">
+        <div className="flex-1 bg-slate-900 border border-slate-700 rounded-xl p-4 flex flex-col">
+          <div className="flex justify-between mb-2">
+             <label className="text-xs font-semibold text-slate-500 uppercase">Input Transcript</label>
+             <button 
+               onClick={() => setTextInput(DEFAULT_CHAT_TEXT)}
+               className="text-xs text-indigo-400 hover:text-indigo-300"
+             >
+               Load Sample
+             </button>
+          </div>
+          <textarea
+            value={textInput}
+            onChange={(e) => setTextInput(e.target.value)}
+            placeholder="Paste conversation here..."
+            className="flex-1 bg-slate-950 border border-slate-800 rounded-lg p-4 text-sm text-slate-300 font-mono focus:outline-none focus:border-indigo-500/50 resize-none min-h-[200px]"
+          />
+        </div>
+
+        <div className="flex flex-col justify-center gap-4 min-w-[200px]">
+          <button 
+            onClick={onAnalyze}
+            disabled={loading}
+            className="bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white px-8 py-4 rounded-xl font-bold transition-all shadow-lg shadow-indigo-500/20 flex items-center justify-center gap-2 group disabled:opacity-70"
+          >
+            {loading ? (
+               <span className="flex items-center gap-2">
+                 <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                 Analyzing...
+               </span>
+            ) : (
+              <>
+                <Sparkles className="w-5 h-5 text-yellow-200 group-hover:rotate-12 transition-transform" />
+                Analyze with Gemini
+              </>
+            )}
+          </button>
+          
+          <div className="text-xs text-slate-500 text-center px-4">
+            Analysis Powered by <br/> Gemini 2.5 Flash
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-left mt-8">
+        {[
+          { icon: ShieldAlert, title: "Conflict Detection", desc: "Identify triggers before they escalate." },
+          { icon: Brain, title: "Subtext AI", desc: "Decode passive-aggression and hidden meaning." },
+          { icon: Activity, title: "Emotional Arc", desc: "View your conversation as a narrative story." }
+        ].map((feat, i) => (
+          <div key={i} className="p-4 rounded-xl bg-slate-900/50 border border-slate-800">
+            <feat.icon className="w-6 h-6 text-slate-400 mb-3" />
+            <h4 className="text-white font-medium text-sm">{feat.title}</h4>
+            <p className="text-slate-500 text-xs mt-1">{feat.desc}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  </div>
+);
+
+/* -------------------------------------------------------------------------- */
+/* MAIN APP                                    */
+/* -------------------------------------------------------------------------- */
+
+export default function App() {
+  const [activeTab, setActiveTab] = useState('upload');
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isAnalyzed, setIsAnalyzed] = useState(false);
+  const [textInput, setTextInput] = useState('');
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisData, setAnalysisData] = useState(null);
+
+  const handleAnalyze = async () => {
+    if (!textInput.trim()) return;
+    setIsAnalyzing(true);
+    
+    const prompt = `
+      You are an expert relationship mediator and communication analyst. 
+      Analyze the following chat log and return a JSON object.
+      
+      CHAT LOG:
+      ${textInput}
+
+      JSON SCHEMA:
+      {
+        "healthScore": (number 0-100),
+        "conflictLevel": (string, e.g. "Low", "Moderate", "High"),
+        "dominantTone": (string, e.g. "Passive Aggressive", "Collaborative", "Hostile"),
+        "verdict": {
+          "coreConflict": (string, 1 sentence summary),
+          "resolutionStrategy": (string, 1 sentence advice),
+          "hiddenPattern": (string, observation of behavioral pattern)
+        }
+      }
+      
+      Ensure the JSON is valid and contains no other text.
+    `;
+
+    const result = await callGemini(prompt, "You are a JSON-only response bot.");
+    
+    if (result) {
+      setAnalysisData(result);
+      setIsAnalyzed(true);
+      setActiveTab('overview');
+    } else {
+      alert("Analysis failed. Please try again.");
+    }
+    
+    setIsAnalyzing(false);
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-200 font-sans selection:bg-indigo-500/30">
+      
+      {/* Top Navigation Mobile */}
+      <div className="lg:hidden flex items-center justify-between p-4 border-b border-slate-800 bg-slate-900/80 backdrop-blur-md sticky top-0 z-40">
+        <div className="flex items-center gap-2">
+          <div className="w-8 h-8 rounded bg-indigo-600 flex items-center justify-center">
+             <Users className="text-white w-5 h-5" />
+          </div>
+          <span className="font-bold text-white">Third Person</span>
+        </div>
+        <button onClick={() => setIsSidebarOpen(true)} className="p-2 text-slate-400 hover:text-white">
+          <Menu className="w-6 h-6" />
+        </button>
+      </div>
+
+      <div className="flex h-screen overflow-hidden">
+        {/* Sidebar */}
+        {isAnalyzed && (
+          <Sidebar 
+            activeTab={activeTab} 
+            setActiveTab={setActiveTab} 
+            isOpen={isSidebarOpen}
+            setIsOpen={setIsSidebarOpen}
+          />
+        )}
+
+        {/* Main Content Area */}
+        <main className={`flex-1 overflow-y-auto transition-all duration-300 ${isAnalyzed ? 'lg:ml-64' : ''}`}>
+          <div className="max-w-7xl mx-auto p-4 lg:p-8">
+            
+            {!isAnalyzed ? (
+              <UploadView 
+                onAnalyze={handleAnalyze} 
+                textInput={textInput} 
+                setTextInput={setTextInput}
+                loading={isAnalyzing}
+              />
+            ) : (
+              <>
+                {/* Header */}
+                <header className="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
+                  <div>
+                    <h2 className="text-2xl font-bold text-white">
+                      {activeTab === 'overview' && 'Analysis Overview'}
+                      {activeTab === 'oracle' && 'The Oracle ✨'}
+                      {activeTab === 'subtext' && 'Subtext & Tone'}
+                      {activeTab === 'dynamics' && 'Power Dynamics'}
+                      {activeTab === 'timeline' && 'Narrative Timeline'}
+                      {activeTab === 'health' && 'Relationship Health'}
+                    </h2>
+                    <p className="text-slate-400 text-sm mt-1">
+                      AI Analysis Active • {new Date().toLocaleDateString()}
+                    </p>
+                  </div>
+                  <div className="flex gap-3">
+                    <button 
+                      onClick={() => setIsAnalyzed(false)}
+                      className="px-4 py-2 text-sm font-medium text-slate-400 hover:text-white bg-slate-900 hover:bg-slate-800 border border-slate-700 rounded-lg transition-colors"
+                    >
+                      New Analysis
+                    </button>
+                    <button className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-lg shadow-indigo-500/20 transition-colors flex items-center gap-2">
+                      <ArrowUpRight className="w-4 h-4" />
+                      Export Report
+                    </button>
+                  </div>
+                </header>
+
+                {/* Content Views */}
+                {activeTab === 'overview' && <OverviewView data={analysisData} />}
+                {activeTab === 'oracle' && <OracleView chatContext={textInput} />}
+                {activeTab === 'subtext' && <SubtextDecoder />}
+                
+                {(activeTab !== 'overview' && activeTab !== 'oracle' && activeTab !== 'subtext') && (
+                  <div className="flex flex-col items-center justify-center h-96 text-center space-y-4 border border-dashed border-slate-800 rounded-xl bg-slate-900/30">
+                    <div className="w-16 h-16 rounded-full bg-slate-800 flex items-center justify-center">
+                      <Zap className="w-8 h-8 text-slate-600" />
+                    </div>
+                    <h3 className="text-xl font-medium text-slate-400">Additional Module Placeholder</h3>
+                    <p className="text-slate-500 max-w-md">
+                      The {activeTab} module uses advanced NLP to analyze specific vectors of the conversation. 
+                      (Currently using mock data for demo purposes).
+                    </p>
+                    <button 
+                      onClick={() => setActiveTab('overview')}
+                      className="text-indigo-400 hover:text-indigo-300 text-sm font-medium"
+                    >
+                      Return to Overview
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </main>
+      </div>
+
+      {/* Global Styles for Animations and Scrollbar */}
+      <style>{`
+        .custom-scrollbar::-webkit-scrollbar {
+          width: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+          background: #0f172a; 
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+          background: #334155; 
+          border-radius: 10px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+          background: #475569; 
+        }
+        @keyframes fadeIn {
+          from { opacity: 0; transform: translateY(10px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fadeIn {
+          animation: fadeIn 0.4s ease-out forwards;
+        }
+        @keyframes spin {
+          to { transform: rotate(360deg); }
+        }
+        .animate-spin {
+          animation: spin 1s linear infinite;
+        }
+      `}</style>
+    </div>
+  );
+}
